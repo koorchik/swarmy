@@ -190,11 +190,14 @@ pub(super) fn toast(f: &mut Frame, app: &App, area: Rect) {
     };
     let Some((m, c)) = msg else { return };
     let wdt = (w(&m) as u16 + 4).min(area.width);
+    let inner_w = wdt.saturating_sub(4).max(1) as usize;
+    let lines_n = w(&m).div_ceil(inner_w).clamp(1, 3) as u16;
+    let height = (lines_n + 2).min(area.height);
     let r = Rect {
-        x: area.x + area.width - wdt,
-        y: area.y + area.height.saturating_sub(4),
+        x: area.x + area.width.saturating_sub(wdt),
+        y: area.y + area.height.saturating_sub(height + 1),
         width: wdt,
-        height: 3,
+        height,
     };
     f.render_widget(Clear, r);
     let block = Block::bordered()
@@ -207,7 +210,8 @@ pub(super) fn toast(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Span::styled(
             m,
             Style::new().fg(th.fg).add_modifier(Modifier::BOLD),
-        )),
+        ))
+        .wrap(Wrap { trim: true }),
         inner,
     );
 }

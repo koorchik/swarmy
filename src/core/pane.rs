@@ -23,6 +23,9 @@ pub struct KittyWindow {
     pub id: u32,
     /// `KITTY_LISTEN_ON` of its kitty, e.g. `unix:@kitty-1234`; set only with `listen_on`.
     pub socket: Option<String>,
+    /// `KITTY_PID` of its kitty OS process, so a no-socket jump never targets another kitty.
+    #[serde(default)]
+    pub kitty_pid: Option<u32>,
 }
 
 impl KittyWindow {
@@ -30,15 +33,22 @@ impl KittyWindow {
     pub fn from_environ(environ: &[u8]) -> Option<KittyWindow> {
         let mut id = None;
         let mut socket = None;
+        let mut kitty_pid = None;
         for var in environ.split(|b| *b == 0) {
             let var = String::from_utf8_lossy(var);
             if let Some(v) = var.strip_prefix("KITTY_WINDOW_ID=") {
                 id = v.parse().ok();
             } else if let Some(v) = var.strip_prefix("KITTY_LISTEN_ON=") {
                 socket = Some(v.to_string()).filter(|s| !s.is_empty());
+            } else if let Some(v) = var.strip_prefix("KITTY_PID=") {
+                kitty_pid = v.parse().ok();
             }
         }
-        id.map(|id| KittyWindow { id, socket })
+        id.map(|id| KittyWindow {
+            id,
+            socket,
+            kitty_pid,
+        })
     }
 }
 
@@ -72,13 +82,13 @@ mod tests {
 
     #[test]
     fn reads_the_window_and_socket_from_the_environment() {
-        let env =
-            b"PATH=/usr/bin\0KITTY_WINDOW_ID=7\0KITTY_LISTEN_ON=unix:@kitty-42\0TERM=xterm-kitty\0";
+        let env = b"PATH=/usr/bin\0KITTY_WINDOW_ID=7\0KITTY_LISTEN_ON=unix:@kitty-42\0KITTY_PID=42\0TERM=xterm-kitty\0";
         assert_eq!(
             KittyWindow::from_environ(env),
             Some(KittyWindow {
                 id: 7,
-                socket: Some("unix:@kitty-42".into())
+                socket: Some("unix:@kitty-42".into()),
+                kitty_pid: Some(42),
             })
         );
     }
@@ -86,10 +96,11 @@ mod tests {
     #[test]
     fn a_window_without_listen_on_has_no_socket() {
         assert_eq!(
-            KittyWindow::from_environ(b"KITTY_WINDOW_ID=3\0"),
+            KittyWindow::from_environ(b"KITTY_WINDOW_ID=3\0KITTY_PID=99\0"),
             Some(KittyWindow {
                 id: 3,
-                socket: None
+                socket: None,
+                kitty_pid: Some(99),
             })
         );
     }
@@ -116,6 +127,7 @@ mod tests {
             window: KittyWindow {
                 id: 4,
                 socket: None,
+                kitty_pid: None,
             },
         };
         assert_eq!(kitty.to_string(), "kitty window 4");
@@ -131,9 +143,22 @@ mod tests {
             window: KittyWindow {
                 id: 4,
                 socket: Some("unix:@k".into()),
+                kitty_pid: Some(42),
             },
         };
         let json = serde_json::to_string(&pane).unwrap();
         assert_eq!(serde_json::from_str::<Pane>(&json).unwrap(), pane);
+
+        let without_pid = r#"{"kind":"kitty","window":{"id":4,"socket":"unix:@k"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Pane>(without_pid).unwrap(),
+            Pane::Kitty {
+                window: KittyWindow {
+                    id: 4,
+                    socket: Some("unix:@k".into()),
+                    kitty_pid: None,
+                }
+            }
+        );
     }
 }
