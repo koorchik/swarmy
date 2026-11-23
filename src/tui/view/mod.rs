@@ -565,8 +565,8 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
 
 fn panel_keys(p: Panel) -> &'static str {
     match p {
-        Panel::Swarm => "↑↓ select · Enter details · J tmux · / filter",
-        Panel::Agent => "↑↓ scroll tools · J tmux",
+        Panel::Swarm => "↑↓ select · Enter details · J jump · / filter",
+        Panel::Agent => "↑↓ scroll tools · J jump",
         Panel::Limits => {
             "↑↓ · Enter switch · S best · c save · a add · r rename · d forget · R re-read"
         }
@@ -743,7 +743,7 @@ mod tests {
             context_tokens: 1000,
             spark: vec![0.1; 15],
             lane: Vec::new(),
-            tmux: None,
+            pane: None,
             pid: None,
             account: None,
             first_seen: Utc::now(),

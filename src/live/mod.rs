@@ -44,7 +44,7 @@ pub struct Agent {
     pub spark: Vec<f64>,
     /// What the agent did in each of the last 30 minutes (oldest first), see `Lane`.
     pub lane: Vec<Lane>,
-    pub tmux: Option<String>,
+    pub pane: Option<crate::core::pane::Pane>,
     pub pid: Option<u32>,
     pub account: Option<String>,
     /// When the agent first appeared: the stable sort key of the tree.
@@ -327,7 +327,7 @@ pub fn build(
             context_tokens: last_req.context_tokens.unwrap_or(0).max(0) as u64,
             spark,
             lane: Vec::new(),
-            tmux: live_session.and_then(|l| l.tmux.clone()),
+            pane: live_session.and_then(|l| l.pane.clone()),
             pid: live_session.map(|l| l.pid),
             account: last_req.account,
             first_seen: r.first_ts.map(from_ms).unwrap_or(last),
@@ -762,7 +762,7 @@ mod tests {
             requests: 0,
             context_tokens: 0,
             spark: vec![],
-            tmux: None,
+            pane: None,
             pid: None,
             account: None,
             first_seen: Utc::now(),

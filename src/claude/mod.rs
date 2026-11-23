@@ -4,6 +4,8 @@
 pub mod config_json;
 pub mod credentials;
 pub mod files;
+pub mod kitty;
+pub mod pane;
 pub mod procs;
 pub mod project;
 pub mod registry;

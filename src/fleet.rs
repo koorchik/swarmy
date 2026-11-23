@@ -35,7 +35,7 @@ pub struct NeedsYou {
     pub name: String,
     pub what: String,
     pub since: Option<DateTime<Utc>>,
-    pub tmux: Option<String>,
+    pub pane: Option<crate::core::pane::Pane>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

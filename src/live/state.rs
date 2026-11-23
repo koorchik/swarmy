@@ -147,7 +147,7 @@ mod tests {
             cwd: "/w/proj".into(),
             name: None,
             status,
-            tmux: None,
+            pane: None,
             version: None,
             kind: None,
             started_at: t(-120),

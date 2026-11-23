@@ -62,7 +62,7 @@ pub enum Command {
     Compact(compact::CompactArgs),
     /// Optional: add the swarmy status line to Claude Code (exact limits) and save logins.
     Setup(setup::SetupArgs),
-    /// Switch tmux to the Claude Code that has waited for you the longest (bind it to a key).
+    /// Switch tmux or kitty to the Claude Code that has waited for you the longest (bind it to a key).
     Jump {
         /// Only list who waits, do not switch.
         #[arg(long)]
@@ -302,8 +302,9 @@ fn jump(list: bool) -> anyhow::Result<()> {
     let dirs = crate::config::Dirs::resolve()?;
     let config = crate::config::Config::load(&dirs)?;
     let now = chrono::Utc::now();
-    // (name, what, tmux)
-    let waiting: Vec<(String, String, Option<String>)> = match crate::fleet::read_fresh(
+    use crate::core::pane::Pane;
+    // (name, what, pane)
+    let waiting: Vec<(String, String, Option<Pane>)> = match crate::fleet::read_fresh(
         &crate::fleet::path(&dirs.data),
         config.statusline.fresh_seconds,
         now,
@@ -311,7 +312,7 @@ fn jump(list: bool) -> anyhow::Result<()> {
         Some(f) => f
             .needs_you
             .into_iter()
-            .map(|n| (n.name, n.what, n.tmux))
+            .map(|n| (n.name, n.what, n.pane))
             .collect(),
         None => {
             let mut seat_dirs = vec![dirs.home.join(".claude")];
@@ -325,7 +326,7 @@ fn jump(list: bool) -> anyhow::Result<()> {
             seat_dirs
                 .iter()
                 .flat_map(|d| crate::claude::registry::waiting_sessions(&d.join("sessions")))
-                .map(|w| (w.label(), w.what.clone(), w.tmux.clone()))
+                .map(|w| (w.label(), w.what.clone(), w.pane.clone()))
                 .collect()
         }
     };
@@ -334,11 +335,11 @@ fn jump(list: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     if list {
-        for (name, what, tmux) in &waiting {
+        for (name, what, pane) in &waiting {
             println!(
                 "▲ {name}: {what}{}",
-                tmux.as_ref()
-                    .map(|t| format!("  (tmux {t})"))
+                pane.as_ref()
+                    .map(|p| format!("  ({p})"))
                     .unwrap_or_default()
             );
         }
@@ -346,18 +347,17 @@ fn jump(list: bool) -> anyhow::Result<()> {
     }
     let Some((name, what, Some(pane))) = waiting.iter().find(|w| w.2.is_some()).cloned() else {
         anyhow::bail!(
-            "{} session(s) wait for you, none inside tmux",
+            "{} session(s) wait for you, none inside tmux or kitty",
             waiting.len()
         );
     };
-    match crate::claude::tmux::switch_to(&pane) {
-        crate::claude::tmux::Jump::Done => {
+    match crate::claude::pane::jump(&pane) {
+        crate::claude::pane::Jump::Done => {
             println!("→ {name}: {what}");
             Ok(())
         }
-        crate::claude::tmux::Jump::NotInTmux { hint } => {
-            anyhow::bail!("not inside tmux; attach with: {hint}")
+        crate::claude::pane::Jump::Unreachable(why) | crate::claude::pane::Jump::Failed(why) => {
+            anyhow::bail!(why)
         }
-        crate::claude::tmux::Jump::Failed => anyhow::bail!("tmux could not switch to {pane}"),
     }
 }

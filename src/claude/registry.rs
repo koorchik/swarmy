@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::procs::{ProcTable, proc_start_ticks};
 use crate::core::ids::{SeatId, SessionId};
+use crate::core::pane::Pane;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -39,7 +40,8 @@ pub struct LiveSession {
     pub cwd: String,
     pub name: Option<String>,
     pub status: SessionStatus,
-    pub tmux: Option<String>,
+    /// Its tmux pane or kitty window, for `J`.
+    pub pane: Option<Pane>,
     pub version: Option<String>,
     pub kind: Option<String>,
     pub started_at: DateTime<Utc>,
@@ -116,7 +118,7 @@ pub fn live_sessions(seat: &SeatId, sessions_dir: &Path, procs: &ProcTable) -> V
             cwd: r.cwd,
             name: r.name,
             status: SessionStatus::parse(r.status.as_deref(), r.waiting_for.as_deref()),
-            tmux: r.tmux.filter(|t| !t.is_empty()),
+            pane: super::pane::of(r.tmux, r.pid, r.proc_start.as_deref()),
             version: r.version,
             kind: r.kind.or(r.entrypoint),
             started_at: ms(r.started_at).unwrap_or_else(Utc::now),
@@ -133,7 +135,7 @@ pub struct Waiting {
     pub session_id: SessionId,
     pub name: Option<String>,
     pub what: String,
-    pub tmux: Option<String>,
+    pub pane: Option<Pane>,
     pub cwd: String,
 }
 
@@ -171,7 +173,7 @@ pub fn waiting_sessions(sessions_dir: &Path) -> Vec<Waiting> {
             session_id: SessionId::new(r.session_id),
             name: r.name,
             what: r.waiting_for.unwrap_or_else(|| "input".into()),
-            tmux: r.tmux.filter(|t| !t.is_empty()),
+            pane: super::pane::of(r.tmux, r.pid, r.proc_start.as_deref()),
             cwd: r.cwd,
         });
     }
@@ -235,6 +237,11 @@ mod tests {
         assert_eq!(s[0].seat, seat);
         assert_eq!(s[0].session_id, "s1");
         assert_eq!(s[0].status, SessionStatus::Waiting("input needed".into()));
-        assert_eq!(s[0].tmux.as_deref(), Some("0:@0.%6"));
+        assert_eq!(
+            s[0].pane,
+            Some(Pane::Tmux {
+                pane: "0:@0.%6".into()
+            })
+        );
     }
 }

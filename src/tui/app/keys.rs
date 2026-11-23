@@ -333,7 +333,7 @@ impl App {
         }
     }
 
-    /// Switch the terminal to the tmux pane of the selected agent's Claude Code.
+    /// Take the user to the tmux pane or kitty window of the selected agent's Claude Code.
     fn jump(&mut self) {
         let Some(a) = self.selected_agent() else {
             return;
@@ -343,18 +343,17 @@ impl App {
             .agents
             .iter()
             .find(|x| x.is_main() && x.seat == a.seat && x.session_id == a.session_id);
-        let Some(pane) = main.and_then(|m| m.tmux.clone()).or_else(|| a.tmux.clone()) else {
-            self.toast("this session is not running inside tmux", Tone::Warn);
+        let Some(pane) = main.and_then(|m| m.pane.clone()).or_else(|| a.pane.clone()) else {
+            self.toast(
+                "this session is not running inside tmux or kitty",
+                Tone::Warn,
+            );
             return;
         };
-        match crate::claude::tmux::switch_to(&pane) {
-            crate::claude::tmux::Jump::Done => self.toast(format!("jumped to {pane}"), Tone::Good),
-            crate::claude::tmux::Jump::NotInTmux { hint } => {
-                self.toast(format!("not inside tmux; attach with: {hint}"), Tone::Warn)
-            }
-            crate::claude::tmux::Jump::Failed => {
-                self.toast(format!("tmux could not switch to {pane}"), Tone::Bad)
-            }
+        match crate::claude::pane::jump(&pane) {
+            crate::claude::pane::Jump::Done => self.toast(format!("jumped to {pane}"), Tone::Good),
+            crate::claude::pane::Jump::Unreachable(why) => self.toast(why, Tone::Warn),
+            crate::claude::pane::Jump::Failed(why) => self.toast(why, Tone::Bad),
         }
     }
 

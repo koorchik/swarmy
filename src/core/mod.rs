@@ -3,6 +3,7 @@
 pub mod ids;
 pub mod limits;
 pub mod models;
+pub mod pane;
 pub mod period;
 pub mod pricing;
 pub mod storage;

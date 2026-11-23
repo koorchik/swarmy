@@ -19,8 +19,8 @@ struct Segment {
 pub struct Extra {
     pub fleet: Option<crate::fleet::Fleet>,
     /// Sessions waiting for the user when there is no fresh fleet summary:
-    /// (session id, name, what, tmux).
-    pub waiting: Vec<(String, String, String, Option<String>)>,
+    /// (session id, name, what, pane).
+    pub waiting: Vec<(String, String, String, Option<crate::core::pane::Pane>)>,
     /// This seat's key in the fleet summary.
     pub seat_key: SeatId,
     pub mask: bool,
@@ -96,12 +96,13 @@ pub fn render(input: &Input, x: &Extra, now: DateTime<Utc>) -> String {
     for key in &x.segments {
         let forms: Vec<(String, usize)> = match key.as_str() {
             "attention" => {
-                let others: Vec<(String, String, Option<String>)> = match &x.fleet {
+                let others: Vec<(String, String, Option<crate::core::pane::Pane>)> = match &x.fleet
+                {
                     Some(f) => f
                         .needs_you
                         .iter()
                         .filter(|n| n.session_id.as_str() != me)
-                        .map(|n| (n.name.clone(), n.what.clone(), n.tmux.clone()))
+                        .map(|n| (n.name.clone(), n.what.clone(), n.pane.clone()))
                         .collect(),
                     None => x
                         .waiting

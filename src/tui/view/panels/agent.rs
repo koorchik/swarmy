@@ -155,8 +155,12 @@ pub fn agent(f: &mut Frame, app: &mut App, area: Rect) {
         dim(app),
     ));
     lines.push(Line::from(ctx));
-    if let Some(t) = &a.tmux {
-        lines.push(kv("tmux", format!("{t} · J jumps there"), th.accent));
+    if let Some(p) = &a.pane {
+        lines.push(kv(
+            p.terminal(),
+            format!("{} · J jumps there", p.place()),
+            th.accent,
+        ));
     }
     if app.timeline.0 == a.key()
         && let Some(msg) = &app.timeline.2

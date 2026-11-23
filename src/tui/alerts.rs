@@ -555,7 +555,7 @@ mod tests {
             context_tokens: 1_000,
             spark: Vec::new(),
             lane: Vec::new(),
-            tmux: None,
+            pane: None,
             pid: None,
             account: None,
             first_seen: now() - Duration::minutes(30),

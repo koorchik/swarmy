@@ -530,7 +530,7 @@ fn fleet_of(
                 name,
                 what: what.clone(),
                 since: Some(a.since),
-                tmux: main.and_then(|m| m.tmux.clone()).or_else(|| a.tmux.clone()),
+                pane: main.and_then(|m| m.pane.clone()).or_else(|| a.pane.clone()),
             });
         }
     }

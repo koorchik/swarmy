@@ -113,7 +113,7 @@ pub fn run(
                     w.session_id.to_string(),
                     w.label(),
                     w.what.clone(),
-                    w.tmux.clone(),
+                    w.pane.clone(),
                 )
             })
             .collect()
