@@ -22,8 +22,8 @@ your weekly limit went and when it runs out.
   stalled), for how long, its model and effort, context fill, cost, and a 30-minute activity lane.
 - **The moment one needs you, and a key to get there.** A permission prompt, a question or a plan
   to approve blinks in the tree, rings the terminal bell and goes to the top of ATTENTION. `J`
-  switches your tmux client to that Claude Code's pane, or focuses its kitty window; `swarmy jump`
-  does the same from a key binding.
+  jumps straight to that Claude Code's pane or window (tmux, Zellij, kitty, WezTerm, iTerm2);
+  `swarmy jump` does the same from a key binding.
 - **Where the weekly limit went, and when it runs out.** Per account: the week used, the share
   each project took, and the time it runs out at the current pace. Early limit resets and logins
   moved between config dirs are followed.
@@ -135,7 +135,7 @@ that (`L` switches by hand). Every panel can be zoomed (`z`).
 | `Tab` `Shift-Tab` · `1`–`9` `0` | next / previous panel · focus a panel by number (again: zoom); in tabs, `1`–`5` switch tabs |
 | `↑↓` `PgUp` `PgDn` · `Enter` | move in the focused panel · open: agent → details, alert → go to it, project → its agents, seat → pick a login |
 | `n` `N` | next / previous thing that needs attention |
-| `J` | jump to the selected agent's Claude Code in tmux or kitty |
+| `J` | jump to the selected agent's Claude Code (tmux, Zellij, kitty, WezTerm, iTerm2) |
 | `/` | filter: words, `p:project`, `m:model`, `s:seat`, `state:needs` |
 | `:` | commands: `switch <seat> <login>`, `capture <seat>`, `period 7d`, `layout wall` |
 | `t` · `g` · `v` | period (today, 7d, 30d, all) · spend grouping · SWARM lanes ↔ spend |
@@ -154,7 +154,7 @@ swarmy report -p 30d --by day --format csv
 swarmy models -p 7d                   # per model: cost, cache hits, thinking, effort mix, substitutions
 swarmy accounts                       # seats, saved logins and the limit left on each
 swarmy prices                         # the price in force for every model and where it comes from
-swarmy jump                           # switch tmux or kitty to the Claude Code that has waited for you longest
+swarmy jump                           # jump to the Claude Code that has waited for you longest
 ```
 
 Periods: `today`, `yesterday`, `week` (the current limit window, the default), `month`, `all`,
@@ -365,13 +365,18 @@ days less than the shortest transcript retention of your seats. Nothing is ever 
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | Dashboard, reports, status line | ✓ | ✓ | ✓ |
-| Jump to a session (`J`, `swarmy jump`) | ✓ with tmux or kitty | ✓ with tmux | — |
+| Jump to a session (`J`, `swarmy jump`) | ✓ tmux, Zellij, kitty, WezTerm | ✓ tmux, Zellij, kitty, WezTerm, iTerm2 | — |
 | Vault: save and switch logins | ✓ | not yet (Keychain) | ✓ |
 | Eco mode on battery | ✓ | ✓ | with `--eco` |
 
-Jumping in kitty focuses the window a Claude Code was started in (its `KITTY_WINDOW_ID`) through
-kitty's remote control, so `kitty.conf` needs `allow_remote_control socket-only` and
-`listen_on unix:@kitty-{kitty_pid}`; without them `J` says so. Inside tmux, the tmux pane wins.
+Jumping detects where a Claude Code runs (multiplexers take precedence over the outer terminal:
+tmux → Zellij → kitty → WezTerm → iTerm2). Notes per terminal:
+- **tmux**: works inside tmux (`swarmy` switches your client to the target pane).
+- **Zellij**: requires Zellij 0.44+ (`action focus-pane-id`) inside the same Zellij session.
+- **kitty**: needs `allow_remote_control socket-only` and `listen_on unix:@kitty-{kitty_pid}` in
+  `kitty.conf`; without them `J` says so.
+- **WezTerm**: works out of the box via `WEZTERM_UNIX_SOCKET`, even from another terminal.
+- **iTerm2** (macOS): focuses via AppleScript; macOS prompts once for Automation permission.
 
 Linux is the main platform. The tests run on Linux, macOS and Windows in CI. Builds: Linux x86_64,
 aarch64, ARMv7 and ARMv6 (static musl), macOS universal, Windows x86_64. Release details:

@@ -144,9 +144,10 @@ logins. Users run it in a spare terminal, mostly on laptops.
   refresh token (same account and plan, fresh access token) is followed as the same login
   (`vault/seats.rs::is_rotation`), never taken for a new one.
 - `sessions/<pid>.json` holds live status (`busy`/`idle`/`waiting` + `waitingFor`), tmux pane and
-  `procStart` (check it against `/proc/<pid>/stat` to ignore reused pids). A kitty window is not
-  recorded there: `claude::kitty` reads `KITTY_WINDOW_ID` / `KITTY_LISTEN_ON` from the process
-  environment, once per process.
+  `procStart` (check it against `/proc/<pid>/stat` to ignore reused pids). Other terminals and
+  multiplexers (Zellij, kitty, WezTerm, iTerm2) are not recorded there: `claude::proc_env` reads
+  their environment variables once per process (`/proc/<pid>/environ` on Linux, `sysinfo` single-PID
+  refresh on macOS) and parses them through `core::pane::Pane::from_environ_pairs`.
 - `.claude.json`: `cachedUsageUtilization` (limits, no network needed), `additionalModelCostsCache`
   (prices), `oauthAccount`. For `~/.claude` it lives at `~/.claude.json`, otherwise inside the dir.
 - Unknown record types are counted; `swarmy doctor` reports them (format drift).

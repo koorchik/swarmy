@@ -1,51 +1,13 @@
-//! Finding and focusing the kitty window a Claude Code runs in.
+//! Focusing the kitty window a Claude Code runs in (`kitten @ focus-window`).
 //!
-//! kitty puts `KITTY_WINDOW_ID` (and, with `listen_on`, `KITTY_LISTEN_ON`) into the environment of
-//! everything it starts, so a Claude Code's window comes from its own environment, which never
-//! changes: it is read once per process. Focusing goes through kitty's remote control
-//! (`kitten @ focus-window`), which the user turns on in `kitty.conf`.
+//! Finding the window happens in `claude::proc_env` (`KITTY_WINDOW_ID`, `KITTY_LISTEN_ON`,
+//! `KITTY_PID`). Focusing goes through kitty's remote control, which the user turns on in
+//! `kitty.conf`.
 
-use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::process::Command;
 
-use super::procs::proc_start_ticks;
+use super::pane::{JUMP_TIMEOUT, RunOutcome, run_with_timeout};
 use crate::core::pane::KittyWindow;
-
-/// Windows already read, per (pid, start time) so a reused pid is read again.
-type Seen = HashMap<(u32, String), Option<KittyWindow>>;
-
-/// Bound how long `kitten @` may block the TUI or CLI (TTY remote control stalls when disabled).
-const FOCUS_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// The kitty window of a running process (Linux; elsewhere none).
-pub fn window_of(pid: u32, proc_start: Option<&str>) -> Option<KittyWindow> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
-    let start = match proc_start {
-        Some(s) if !s.is_empty() => s.to_string(),
-        Some(_) | None => proc_start_ticks(pid).unwrap_or_default(),
-    };
-    let key = (pid, start);
-    let seen = SEEN.get_or_init(Default::default);
-    if let Some(hit) = seen.lock().ok().and_then(|s| s.get(&key).cloned()) {
-        return hit;
-    }
-    let found = std::fs::read(format!("/proc/{pid}/environ"))
-        .ok()
-        .and_then(|e| KittyWindow::from_environ(&e));
-    if let Ok(mut s) = seen.lock() {
-        if s.len() > 512 {
-            s.clear();
-        }
-        s.insert(key, found.clone());
-    }
-    found
-}
 
 pub const REMOTE_CONTROL_HINT: &str = "turn on kitty's remote control: `allow_remote_control socket-only` \
      and `listen_on unix:@kitty-{kitty_pid}` in kitty.conf, then restart kitty";
@@ -95,54 +57,18 @@ fn classify_stderr(stderr: &str) -> FocusError {
     FocusError::Failed(first.trim().to_string())
 }
 
-fn spawn_kitty(args: &[String]) -> Result<Child, FocusError> {
-    let spawn = |bin: &str| {
-        Command::new(bin)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
+fn run_kitty(args: &[String]) -> Result<RunOutcome, FocusError> {
+    let run = |bin: &str| {
+        let mut cmd = Command::new(bin);
+        cmd.args(args);
+        run_with_timeout(&mut cmd, JUMP_TIMEOUT)
     };
-    match spawn("kitten") {
-        Ok(child) => Ok(child),
+    match run("kitten") {
+        Ok(outcome) => Ok(outcome),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            spawn("kitty").map_err(|e2| FocusError::Failed(format!("cannot run kitten: {e2}")))
+            run("kitty").map_err(|e2| FocusError::Failed(format!("cannot run kitten: {e2}")))
         }
         Err(e) => Err(FocusError::Failed(format!("cannot run kitten: {e}"))),
-    }
-}
-
-enum WaitOutcome {
-    Exited(ExitStatus, String),
-    TimedOut,
-}
-
-fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<WaitOutcome, std::io::Error> {
-    let stderr_thread = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = pipe.read_to_string(&mut buf);
-            buf
-        })
-    });
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            let stderr = stderr_thread
-                .and_then(|h| h.join().ok())
-                .unwrap_or_default();
-            return Ok(WaitOutcome::Exited(status, stderr));
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            if let Some(h) = stderr_thread {
-                let _ = h.join();
-            }
-            return Ok(WaitOutcome::TimedOut);
-        }
-        std::thread::sleep(Duration::from_millis(15));
     }
 }
 
@@ -154,14 +80,11 @@ pub fn focus(window: &KittyWindow) -> Result<(), FocusError> {
     let Some(args) = focus_args(window, own_pid, in_tmux) else {
         return Err(FocusError::NoRemoteControl);
     };
-    let child = spawn_kitty(&args)?;
-    match wait_with_timeout(child, FOCUS_TIMEOUT)
-        .map_err(|e| FocusError::Failed(format!("kitten failed: {e}")))?
-    {
-        WaitOutcome::Exited(status, _) if status.success() => Ok(()),
-        WaitOutcome::Exited(_, stderr) => Err(classify_stderr(&stderr)),
-        WaitOutcome::TimedOut if window.socket.is_none() => Err(FocusError::NoRemoteControl),
-        WaitOutcome::TimedOut => Err(FocusError::Failed("timed out waiting for kitty".into())),
+    match run_kitty(&args)? {
+        RunOutcome::Exited(status, _, _) if status.success() => Ok(()),
+        RunOutcome::Exited(_, _, stderr) => Err(classify_stderr(&stderr)),
+        RunOutcome::TimedOut if window.socket.is_none() => Err(FocusError::NoRemoteControl),
+        RunOutcome::TimedOut => Err(FocusError::Failed("timed out waiting for kitty".into())),
     }
 }
 
@@ -237,21 +160,5 @@ mod tests {
             classify_stderr("   \n"),
             FocusError::Failed("kitten failed".into())
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn wait_with_timeout_kills_a_stalled_command() {
-        let child = Command::new("sleep")
-            .arg("5")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let t0 = Instant::now();
-        let outcome = wait_with_timeout(child, Duration::from_millis(60)).unwrap();
-        assert!(matches!(outcome, WaitOutcome::TimedOut));
-        assert!(t0.elapsed() < Duration::from_secs(2));
     }
 }

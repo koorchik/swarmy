@@ -4,11 +4,15 @@
 pub mod config_json;
 pub mod credentials;
 pub mod files;
+pub mod iterm2;
 pub mod kitty;
 pub mod pane;
+pub mod proc_env;
 pub mod procs;
 pub mod project;
 pub mod registry;
 pub mod seats;
 pub mod tmux;
 pub mod transcript;
+pub mod wezterm;
+pub mod zellij;

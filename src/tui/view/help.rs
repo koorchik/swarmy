@@ -58,7 +58,7 @@ pub(super) fn help(f: &mut Frame, app: &App, area: Rect) {
         ("t · g", "period (today · 7d · 30d · all) · spend grouping"),
         (
             "J",
-            "jump to the selected agent's Claude Code in tmux or kitty (outside: `swarmy jump`)",
+            "jump to the selected agent's Claude Code (tmux, zellij, kitty, wezterm, iTerm2; outside: `swarmy jump`)",
         ),
         ("v", "SWARM: activity lanes of 30 min ↔ spend of 15 min"),
         ("L", "layout: auto · wall · column · tabs"),
