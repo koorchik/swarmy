@@ -131,6 +131,7 @@ fn requests(events: &[Event]) -> Vec<&Request> {
             | Event::Title { .. }
             | Event::TurnEnd { .. }
             | Event::Compact { .. }
+            | Event::Interrupted { .. }
             | Event::AgentLaunch { .. }
             | Event::ApiError { .. }
             | Event::CostState { .. } => None,

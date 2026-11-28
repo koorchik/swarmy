@@ -184,3 +184,28 @@ pub(super) fn session_files(
     cache.insert(key, (stamped, list.clone()));
     list
 }
+
+/// Whether the agent of an unchanged transcript finished since it was read. Claude Code writes
+/// `"finished": true` into the agent's `meta.json` a moment after the agent's last transcript
+/// line, so a refresh between the two has read the whole transcript with the old meta, and the
+/// transcript never changes again; a workflow agent is finished by its run's record, written
+/// when the run ends (`files::run_ended`). Cheap enough for every pass: one file looked at per
+/// unfinished agent, and the meta is read only when it is not older than the transcript (the
+/// one written at the spawn is).
+pub(super) fn finished_late(f: &TranscriptFile, transcript: &std::fs::Metadata) -> bool {
+    if let Some(record) = files::run_record(f) {
+        return files::run_ended(&record);
+    }
+    let Some(path) = f.meta_path() else {
+        return false;
+    };
+    // No meta, or no times on this file system: nothing says it finished.
+    let newer = match (
+        std::fs::metadata(&path).and_then(|m| m.modified()),
+        transcript.modified(),
+    ) {
+        (Ok(meta), Ok(transcript)) => meta >= transcript,
+        (Err(_), Ok(_) | Err(_)) | (Ok(_), Err(_)) => false,
+    };
+    newer && files::read_meta(&path).is_some_and(|m| m.finished)
+}

@@ -1276,7 +1276,7 @@ mod tests {
         // completely, then A writes what it read: A's work is dropped, nothing counts twice.
         let mut a = w.index("shared.sqlite");
         let mut b = w.index("shared.sqlite");
-        let work = a.plan(&w.files(), &w.seats).unwrap();
+        let (work, _) = a.plan(&w.files(), &w.seats).unwrap();
         assert_eq!(work.len(), 2);
         w.refresh(&mut b, &[], &prices);
         let mut resolver = Resolver::new(Vec::new());
@@ -1288,7 +1288,7 @@ mod tests {
         // More lines arrive; both refresh again, in turn and interleaved: still once.
         w.append("work", "s1", &[prompt("2026-11-10T10:05:00Z", "Thanks")]);
         w.append("work", "s1", &[compact("2026-11-10T10:06:00Z")]);
-        let work = a.plan(&w.files(), &w.seats).unwrap();
+        let (work, _) = a.plan(&w.files(), &w.seats).unwrap();
         w.refresh(&mut b, &[], &prices);
         a.ingest(work, &[], &mut resolver, &prices, false, &mut |_| {})
             .unwrap();
@@ -1297,6 +1297,246 @@ mod tests {
         assert_eq!(counted(&a), counted(&reference));
         assert_eq!(dump(&a, "SELECT compactions FROM sessions"), vec!["2"]);
         assert_eq!(dump(&a, "SELECT COUNT(*) FROM prompts"), vec!["3"]);
+    }
+
+    /// Claude Code writes `"finished": true` into an agent's `meta.json` a moment after the
+    /// agent's last transcript line. A refresh that ran between the two read the whole
+    /// transcript with the old meta; the transcript never changes again, so the agent stayed
+    /// unfinished in the index and showed as stalled for a day.
+    #[test]
+    fn a_meta_written_after_the_last_transcript_line_still_finishes_the_agent() {
+        let w = World::new(&["work"]);
+        let (m, cwd) = ("claude-opus-4-8", "/w/shop");
+        w.append(
+            "work",
+            "s1",
+            &[assistant(
+                "r1",
+                "2026-11-10T10:00:00Z",
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            )],
+        );
+        let meta = |agent: &str| w.subagent("work", "s1", agent).with_extension("meta.json");
+        for agent in ["late", "running"] {
+            // The meta as written at the spawn, then the agent's lines.
+            std::fs::write(meta(agent), r#"{"agentType":"reviewer"}"#).unwrap();
+            w.write_subagent(
+                "work",
+                "s1",
+                agent,
+                &[assistant(
+                    &format!("{agent}-r1"),
+                    "2026-11-10T10:01:00Z",
+                    m,
+                    cwd,
+                    (100, 1),
+                    &[],
+                )],
+            );
+        }
+        let mut idx = w.index("i.sqlite");
+        let prices = PriceBook::builtin();
+        // The refresh between the last line and the meta: both agents are at work.
+        w.refresh(&mut idx, &[], &prices);
+        let finished = |idx: &Index| {
+            dump(
+                idx,
+                "SELECT agent_id, finished FROM agents WHERE agent_id != '' ORDER BY 1",
+            )
+        };
+        assert_eq!(finished(&idx), ["late|0", "running|0"]);
+        let before = counted(&idx);
+        let seq = |idx: &Index, agent: &str| {
+            idx.agent_seq(crate::index::live::AgentKey {
+                seat: &w.id("work"),
+                session_id: &crate::core::ids::SessionId::from("s1"),
+                agent_id: agent,
+            })
+        };
+        let (late_seq, running_seq) = (seq(&idx, "late"), seq(&idx, "running"));
+
+        // Claude Code marks one of them finished; its transcript stays as it is.
+        std::fs::write(meta("late"), r#"{"agentType":"reviewer","finished":true}"#).unwrap();
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["late|1", "running|0"]);
+        // Nothing was read twice, and only the finished agent counts as changed.
+        assert_eq!(counted(&idx), before);
+        assert!(seq(&idx, "late") > late_seq);
+        assert_eq!(seq(&idx, "running"), running_seq);
+        // The hot refresh (the dashboard's, every second) does the same.
+        std::fs::write(
+            meta("running"),
+            r#"{"agentType":"reviewer","finished":true}"#,
+        )
+        .unwrap();
+        let mut resolver = Resolver::new(vec![]);
+        let live = [(w.id("work"), "s1".to_string())];
+        idx.refresh_hot(&w.seats, &live, &[], &mut resolver, &prices)
+            .unwrap();
+        assert_eq!(finished(&idx), ["late|1", "running|1"]);
+        assert_eq!(counted(&idx), before);
+    }
+
+    /// Claude Code never writes `"finished"` into a workflow agent's `meta.json`: what ends the
+    /// run's agents is the run's record, `<session>/workflows/<run>.json`. Without it every
+    /// agent of every workflow showed as stalled from 20 minutes after the run to a day later.
+    #[test]
+    fn a_workflow_runs_record_finishes_its_agents() {
+        let w = World::new(&["work"]);
+        let (m, cwd) = ("claude-opus-4-8", "/w/shop");
+        w.append(
+            "work",
+            "s1",
+            &[assistant(
+                "r1",
+                "2026-11-10T10:00:00Z",
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            )],
+        );
+        let session = w
+            .subagent("work", "s1", "x")
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let agent = |run: &str, agent: &str| {
+            let dir = session.join("subagents/workflows").join(run);
+            std::fs::create_dir_all(&dir).unwrap();
+            // The meta of a workflow agent, as Claude Code leaves it for good.
+            std::fs::write(
+                dir.join(format!("agent-{agent}.meta.json")),
+                r#"{"agentType":"reviewer","inWorkflowRun":true}"#,
+            )
+            .unwrap();
+            let line = assistant(
+                &format!("{agent}-r1"),
+                "2026-11-10T10:01:00Z",
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            );
+            std::fs::write(
+                dir.join(format!("agent-{agent}.jsonl")),
+                format!("{line}\n"),
+            )
+            .unwrap();
+        };
+        let record = |run: &str, status: &str| {
+            std::fs::create_dir_all(session.join("workflows")).unwrap();
+            std::fs::write(
+                session.join("workflows").join(format!("{run}.json")),
+                format!(r#"{{"runId":"{run}","agentCount":1,"status":"{status}"}}"#),
+            )
+            .unwrap();
+        };
+        // One run ended before the index ever saw it, two are at work.
+        agent("wf_done", "a");
+        record("wf_done", "completed");
+        agent("wf_live", "b");
+        agent("wf_live", "c");
+        agent("wf_dies", "d");
+        let mut idx = w.index("i.sqlite");
+        let prices = PriceBook::builtin();
+        w.refresh(&mut idx, &[], &prices);
+        let finished = |idx: &Index| {
+            dump(
+                idx,
+                "SELECT agent_id, finished FROM agents WHERE kind = 'workflow' ORDER BY 1",
+            )
+        };
+        assert_eq!(finished(&idx), ["a|1", "b|0", "c|0", "d|0"]);
+        let before = counted(&idx);
+
+        // A run ends, another is killed: their agents' transcripts stay as they are.
+        record("wf_live", "completed");
+        record("wf_dies", "killed");
+        let mut resolver = Resolver::new(vec![]);
+        let live = [(w.id("work"), "s1".to_string())];
+        idx.refresh_hot(&w.seats, &live, &[], &mut resolver, &prices)
+            .unwrap();
+        assert_eq!(finished(&idx), ["a|1", "b|1", "c|1", "d|1"]);
+        assert_eq!(counted(&idx), before);
+    }
+
+    /// Claude Code does not mark an agent it stopped (`TaskStop`, Esc): its `meta.json` never
+    /// says finished. The transcript does: its last record is the interruption.
+    #[test]
+    fn an_agent_that_was_stopped_is_finished_until_it_works_again() {
+        let w = World::new(&["work"]);
+        let (m, cwd) = ("claude-opus-4-8", "/w/shop");
+        w.append(
+            "work",
+            "s1",
+            &[assistant(
+                "r1",
+                "2026-11-10T10:00:00Z",
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            )],
+        );
+        let work = |n: u32| {
+            assistant(
+                &format!("a-r{n}"),
+                &format!("2026-11-10T10:0{n}:00Z"),
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            )
+        };
+        let stopped = prompt(
+            "2026-11-10T10:02:00Z",
+            "[Request interrupted by user for tool use]",
+        );
+        std::fs::write(
+            w.subagent("work", "s1", "a").with_extension("meta.json"),
+            r#"{"agentType":"reviewer"}"#,
+        )
+        .unwrap();
+        // Appended, as Claude Code writes: each refresh reads only the new lines.
+        let add = |line: String| {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(w.subagent("work", "s1", "a"))
+                .unwrap();
+            writeln!(f, "{line}").unwrap();
+        };
+        add(work(1));
+        let mut idx = w.index("i.sqlite");
+        let prices = PriceBook::builtin();
+        let finished = |idx: &Index| dump(idx, "SELECT finished FROM agents WHERE agent_id = 'a'");
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["0"]);
+
+        // Stopped: the interruption is the last record.
+        add(stopped);
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["1"]);
+        // A record that is no activity after it changes nothing.
+        add(r#"{"type":"agent-color","agentColor":"blue"}"#.to_string());
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["1"]);
+        // Sent a message, it works again.
+        add(work(3));
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["0"]);
+        // Read again from the start, the last record decides: at work.
+        let mut again = w.index("again.sqlite");
+        w.refresh(&mut again, &[], &prices);
+        assert_eq!(finished(&again), ["0"]);
+        // The interruption is no prompt of the user's.
+        assert_eq!(dump(&idx, "SELECT COUNT(*) FROM prompts"), ["0"]);
     }
 
     #[test]

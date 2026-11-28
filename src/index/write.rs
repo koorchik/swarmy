@@ -98,6 +98,23 @@ fn takes_over(span: Span, session: &str, held: &Held) -> bool {
     }
 }
 
+/// Marks agents finished whose transcripts did not change (`source::finished_late`). The caller
+/// counts them as changed, so the live view reads them again.
+pub(super) fn finish(conn: &mut rusqlite::Connection, agents: &[AgentOf]) -> anyhow::Result<()> {
+    if agents.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (seat, session, agent) in agents {
+        tx.prepare_cached(
+            "UPDATE agents SET finished = 1 WHERE seat = ?1 AND session_id = ?2 AND agent_id = ?3",
+        )?
+        .execute(params![seat, session, agent])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Writes what was read of one file. Records the index rolled up already are skipped (requests
 /// with their tool calls, prompts, API errors; see `marks`); everything else about them (times,
 /// working directory, owner) still counts, as if they had been read.
@@ -114,13 +131,15 @@ pub(super) fn read_side(f: &crate::model::files::TranscriptFile) -> Side {
         .then(|| f.path.parent().map(|p| p.join(&f.session_id)))
         .flatten()
         .and_then(|dir| files::read_custom_title(&dir));
-    let meta = match &f.inline_meta {
+    let mut meta = match &f.inline_meta {
         Some(m) => m.clone(),
         None => f
             .meta_path()
             .and_then(|p| files::read_meta(&p))
             .unwrap_or_default(),
     };
+    // A workflow agent's meta never says so: its run's record does.
+    meta.finished |= files::run_record(f).is_some_and(|r| files::run_ended(&r));
     Side { title, meta }
 }
 
@@ -237,6 +256,10 @@ pub(super) fn write_file(
     let mut count_tools = tx.prepare_cached(
         "UPDATE requests SET tools = (SELECT COUNT(*) FROM tool_calls WHERE msg_id = ?1) WHERE msg_id = ?1",
     )?;
+    // What the read says of the agent's end: stopped when the interruption is the last thing in
+    // it, nothing when it holds no event at all (what the index has then stands).
+    let stopped = matches!(chunk.events.last(), Some(Event::Interrupted { .. }));
+    let quiet = chunk.events.is_empty();
     for ev in chunk.events {
         match ev {
             Event::Owner { account: owner_id } => {
@@ -407,7 +430,7 @@ pub(super) fn write_file(
                     tx.prepare_cached("INSERT INTO compact_events(seat, session_id, ts) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING")?.execute(params![f.seat, f.session_id, t])?;
                 }
             }
-            Event::AgentLaunch { .. } => {}
+            Event::AgentLaunch { .. } | Event::Interrupted { .. } => {}
             Event::CostState { total_usd, models } => {
                 // Cumulative per process; a resumed session starts a new count, so keep the largest.
                 // A map that cannot be written is an error, never an empty text in the column
@@ -484,7 +507,8 @@ pub(super) fn write_file(
            agent_type = COALESCE(excluded.agent_type, agent_type), description = COALESCE(excluded.description, description),
            tool_use_id = COALESCE(excluded.tool_use_id, tool_use_id), parent_agent_id = COALESCE(excluded.parent_agent_id, parent_agent_id),
            depth = COALESCE(excluded.depth, depth), requested_model = COALESCE(excluded.requested_model, requested_model),
-           effort = COALESCE(excluded.effort, effort), finished = excluded.finished,
+           effort = COALESCE(excluded.effort, effort),
+           finished = CASE WHEN ?16 THEN MAX(finished, excluded.finished) ELSE excluded.finished END,
            first_ts = MIN(COALESCE(first_ts, excluded.first_ts), COALESCE(excluded.first_ts, first_ts)),
            last_ts = MAX(COALESCE(last_ts, excluded.last_ts), COALESCE(excluded.last_ts, last_ts))")?.execute(params![
             f.seat,
@@ -499,9 +523,10 @@ pub(super) fn write_file(
             meta.spawn_depth.map(|d| d as i64).or(if main { Some(0) } else { None }),
             meta.model,
             meta.effort,
-            (meta.finished || main) as i64,
+            (meta.finished || main || stopped) as i64,
             agg.first_ts,
             agg.last_ts,
+            quiet,
         ])?;
     tx.prepare_cached("INSERT INTO files(path, seat, session_id, agent_id, kind, ino, size, mtime, offset, last_ts, account_uuid)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)

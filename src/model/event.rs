@@ -80,6 +80,11 @@ pub enum Event {
     Compact {
         ts: Option<DateTime<Utc>>,
     },
+    /// The harness stopped the agent's turn (Claude Code's `[Request interrupted by user…]`):
+    /// the human pressed Esc, or the parent stopped a background agent.
+    Interrupted {
+        ts: Option<DateTime<Utc>>,
+    },
     AgentLaunch {
         ts: Option<DateTime<Utc>>,
         tool_use_id: Option<String>,

@@ -517,6 +517,10 @@ fn parse_user(r: RawRecord, ts: Option<DateTime<Utc>>, out: &mut Vec<Event>) {
 
 fn push_prompt(ts: Option<DateTime<Utc>>, text: &str, id: Option<String>, out: &mut Vec<Event>) {
     let t = text.trim_start();
+    if t.starts_with("[Request interrupted") {
+        out.push(Event::Interrupted { ts });
+        return;
+    }
     // Injected by the harness, not typed by a person.
     let injected = [
         "<task-notification",
@@ -524,7 +528,6 @@ fn push_prompt(ts: Option<DateTime<Utc>>, text: &str, id: Option<String>, out: &
         "<local-command",
         "<command-",
         "Caveat:",
-        "[Request interrupted",
     ];
     if t.is_empty() || injected.iter().any(|p| t.starts_with(p)) {
         return;
