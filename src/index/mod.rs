@@ -218,7 +218,11 @@ fn bump_settled(tx: &Connection) -> rusqlite::Result<()> {
 }
 
 /// A file as the index has it: inode, size, offset, account, last record time.
-type Known = (u64, u64, u64, Option<String>, i64);
+type Known = (u64, u64, u64, Option<String>, i64, bool);
+
+/// `Known`'s last field: whether the file's agent is held as unfinished.
+const UNFINISHED: &str = "COALESCE((SELECT a.finished = 0 FROM agents a WHERE a.seat = files.seat
+     AND a.session_id = files.session_id AND a.agent_id = files.agent_id), 0)";
 
 /// Up to this many files (the hot refresh), `plan` looks each one up by its path instead of
 /// loading the whole `files` table.
@@ -520,7 +524,7 @@ impl Index {
         // re-read their `session-owner` records in the same pass.
         self.adopt_seats(seats)?;
         let reattribute_owners = self.adopt_accounts(seat_info)?;
-        let work = self.plan(&all, seats)?;
+        let (work, finished) = self.plan(&all, seats)?;
         let from_start = work.iter().any(|w| w.start == 0);
         let mut stats = self.ingest(
             work,
@@ -530,6 +534,8 @@ impl Index {
             reattribute_owners,
             progress,
         )?;
+        write::finish(&mut self.conn, &finished)?;
+        self.changes.wrote(finished);
         if from_start {
             // A seat found after a compaction: its old records go straight into the archive.
             self.roll_late(prices, seats)?;
@@ -541,8 +547,13 @@ impl Index {
 
     /// What to read of each file: from the stored offset when the file only grew, from the start
     /// when it was replaced or shrank (`reset`), nothing when it is unchanged. A file read from
-    /// its start gets its read marks here, before anything of this refresh is written.
-    fn plan(&self, all: &[TranscriptFile], seats: &[Seat]) -> anyhow::Result<Vec<Work>> {
+    /// its start gets its read marks here, before anything of this refresh is written. With it,
+    /// the agents of unchanged files that finished since they were read (`finished_late`).
+    fn plan(
+        &self,
+        all: &[TranscriptFile],
+        seats: &[Seat],
+    ) -> anyhow::Result<(Vec<Work>, Vec<AgentOf>)> {
         let mut known: HashMap<String, Known> = HashMap::new();
         let known_row = |r: &rusqlite::Row| -> rusqlite::Result<Known> {
             Ok((
@@ -551,14 +562,15 @@ impl Index {
                 r.get::<_, i64>(2)? as u64,
                 r.get(3)?,
                 r.get(4)?,
+                r.get(5)?,
             ))
         };
         if all.len() <= KNOWN_BY_PATH {
             // The hot refresh, every second: a few dozen files, each found by its key, instead
             // of loading every file the index has ever seen.
-            let mut st = self.conn.prepare_cached(
-                "SELECT ino, size, offset, account_uuid, last_ts FROM files WHERE path = ?1",
-            )?;
+            let mut st = self.conn.prepare_cached(&format!(
+                "SELECT ino, size, offset, account_uuid, last_ts, {UNFINISHED} FROM files WHERE path = ?1"
+            ))?;
             for f in all {
                 let key = f.path.to_string_lossy().into_owned();
                 if let Some(k) = st.query_row([&key], known_row).optional()? {
@@ -566,10 +578,10 @@ impl Index {
                 }
             }
         } else {
-            let mut st = self
-                .conn
-                .prepare("SELECT ino, size, offset, account_uuid, last_ts, path FROM files")?;
-            let rows = st.query_map([], |r| Ok((r.get::<_, String>(5)?, known_row(r)?)))?;
+            let mut st = self.conn.prepare(&format!(
+                "SELECT ino, size, offset, account_uuid, last_ts, {UNFINISHED}, path FROM files"
+            ))?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, String>(6)?, known_row(r)?)))?;
             for row in rows {
                 let (k, v) = row?;
                 known.insert(k, v);
@@ -577,6 +589,7 @@ impl Index {
         }
 
         let mut work = Vec::new();
+        let mut finished = Vec::new();
         let mut marks: Option<marks::Marks> = None;
         for f in all.iter() {
             let Ok(m) = std::fs::metadata(&f.path) else {
@@ -595,8 +608,13 @@ impl Index {
                 // Scheduled for a re-read from the start (`accounts`: `offset > size`), however
                 // the file changed since.
                 Some((_, ksize, koff, ..)) if *koff > *ksize => (0, None, 0, true),
-                Some((kino, ksize, ..)) if *kino == ino && *ksize == size => continue,
-                Some((kino, _, koff, kacc, kts)) if *kino == ino && size >= *koff => {
+                Some((kino, ksize, .., unfinished)) if *kino == ino && *ksize == size => {
+                    if *unfinished && source::finished_late(f, &m) {
+                        finished.push((f.seat.clone(), f.session_id.clone(), f.agent_id.clone()));
+                    }
+                    continue;
+                }
+                Some((kino, _, koff, kacc, kts, _)) if *kino == ino && size >= *koff => {
                     (*koff, kacc.clone(), *kts, false)
                 }
                 Some(_) => (0, None, 0, true),
@@ -622,7 +640,7 @@ impl Index {
                 mark,
             });
         }
-        Ok(work)
+        Ok((work, finished))
     }
 
     /// Reads the planned work and writes it, one immediate transaction per batch: the write lock

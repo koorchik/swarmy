@@ -4,6 +4,7 @@
 //! projects/<encoded cwd>/<session>.jsonl                                main thread
 //! projects/<encoded cwd>/<session>/subagents/agent-<id>.jsonl           subagent (+ .meta.json)
 //! projects/<encoded cwd>/<session>/subagents/workflows/<run>/agent-<id>.jsonl   workflow agent
+//! projects/<encoded cwd>/<session>/workflows/<run>.json                 a workflow run that ended
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -162,6 +163,35 @@ pub fn list_session(seat: &Seat, session_id: &str) -> Vec<TranscriptFile> {
 
 pub fn read_meta(path: &Path) -> Option<AgentMeta> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// The record of the workflow run a workflow agent belongs to (`<session>/workflows/<run>.json`).
+/// The run is named by the transcript's directory, not by `FileKind::Workflow`: a file listed
+/// from the index (`index::source::recent_files`) does not carry its run there.
+pub fn run_record(f: &TranscriptFile) -> Option<PathBuf> {
+    match &f.kind {
+        FileKind::Workflow(_) if f.harness == Harness::Claude => {
+            // <session>/subagents/workflows/<run>/agent-<id>.jsonl: the session dir is four up.
+            let run = f.path.parent()?.file_name()?.to_string_lossy();
+            let session = f.path.ancestors().nth(4)?;
+            Some(session.join("workflows").join(format!("{run}.json")))
+        }
+        FileKind::Workflow(_) | FileKind::Main | FileKind::Subagent => None,
+    }
+}
+
+/// Whether the workflow run of `record` ended. Claude Code never marks a workflow agent's
+/// `meta.json` finished: it writes the run's record once, when the run ends (`completed`,
+/// `failed` or `killed`), and that is what finishes the run's agents.
+pub fn run_ended(record: &Path) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Run {
+        status: String,
+    }
+    std::fs::read_to_string(record)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Run>(&text).ok())
+        .is_some_and(|run| run.status != "running")
 }
 
 /// `custom-title.json` in a session dir.

@@ -98,6 +98,23 @@ fn takes_over(span: Span, session: &str, held: &Held) -> bool {
     }
 }
 
+/// Marks agents finished whose transcripts did not change (`source::finished_late`). The caller
+/// counts them as changed, so the live view reads them again.
+pub(super) fn finish(conn: &mut rusqlite::Connection, agents: &[AgentOf]) -> anyhow::Result<()> {
+    if agents.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (seat, session, agent) in agents {
+        tx.prepare_cached(
+            "UPDATE agents SET finished = 1 WHERE seat = ?1 AND session_id = ?2 AND agent_id = ?3",
+        )?
+        .execute(params![seat, session, agent])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Writes what was read of one file. Records the index rolled up already are skipped (requests
 /// with their tool calls, prompts, API errors; see `marks`); everything else about them (times,
 /// working directory, owner) still counts, as if they had been read.
@@ -114,13 +131,15 @@ pub(super) fn read_side(f: &crate::model::files::TranscriptFile) -> Side {
         .then(|| f.path.parent().map(|p| p.join(&f.session_id)))
         .flatten()
         .and_then(|dir| files::read_custom_title(&dir));
-    let meta = match &f.inline_meta {
+    let mut meta = match &f.inline_meta {
         Some(m) => m.clone(),
         None => f
             .meta_path()
             .and_then(|p| files::read_meta(&p))
             .unwrap_or_default(),
     };
+    // A workflow agent's meta never says so: its run's record does.
+    meta.finished |= files::run_record(f).is_some_and(|r| files::run_ended(&r));
     Side { title, meta }
 }
 
