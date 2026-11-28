@@ -1466,6 +1466,79 @@ mod tests {
         assert_eq!(counted(&idx), before);
     }
 
+    /// Claude Code does not mark an agent it stopped (`TaskStop`, Esc): its `meta.json` never
+    /// says finished. The transcript does: its last record is the interruption.
+    #[test]
+    fn an_agent_that_was_stopped_is_finished_until_it_works_again() {
+        let w = World::new(&["work"]);
+        let (m, cwd) = ("claude-opus-4-8", "/w/shop");
+        w.append(
+            "work",
+            "s1",
+            &[assistant(
+                "r1",
+                "2026-11-10T10:00:00Z",
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            )],
+        );
+        let work = |n: u32| {
+            assistant(
+                &format!("a-r{n}"),
+                &format!("2026-11-10T10:0{n}:00Z"),
+                m,
+                cwd,
+                (100, 1),
+                &[],
+            )
+        };
+        let stopped = prompt(
+            "2026-11-10T10:02:00Z",
+            "[Request interrupted by user for tool use]",
+        );
+        std::fs::write(
+            w.subagent("work", "s1", "a").with_extension("meta.json"),
+            r#"{"agentType":"reviewer"}"#,
+        )
+        .unwrap();
+        // Appended, as Claude Code writes: each refresh reads only the new lines.
+        let add = |line: String| {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(w.subagent("work", "s1", "a"))
+                .unwrap();
+            writeln!(f, "{line}").unwrap();
+        };
+        add(work(1));
+        let mut idx = w.index("i.sqlite");
+        let prices = PriceBook::builtin();
+        let finished = |idx: &Index| dump(idx, "SELECT finished FROM agents WHERE agent_id = 'a'");
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["0"]);
+
+        // Stopped: the interruption is the last record.
+        add(stopped);
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["1"]);
+        // A record that is no activity after it changes nothing.
+        add(r#"{"type":"agent-color","agentColor":"blue"}"#.to_string());
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["1"]);
+        // Sent a message, it works again.
+        add(work(3));
+        w.refresh(&mut idx, &[], &prices);
+        assert_eq!(finished(&idx), ["0"]);
+        // Read again from the start, the last record decides: at work.
+        let mut again = w.index("again.sqlite");
+        w.refresh(&mut again, &[], &prices);
+        assert_eq!(finished(&again), ["0"]);
+        // The interruption is no prompt of the user's.
+        assert_eq!(dump(&idx, "SELECT COUNT(*) FROM prompts"), ["0"]);
+    }
+
     #[test]
     fn rereading_files_changes_no_count_and_a_subagent_reset_keeps_the_main_rows() {
         let w = World::new(&["work"]);
